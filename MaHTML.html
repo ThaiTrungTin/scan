@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Trình Quét Mã QR</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
+    <script src="https://animatedicons.co/scripts/embed-animated-icons.js"></script>
+    <style>
+        body { -webkit-tap-highlight-color: transparent; }
+        .scan-line {
+            position: absolute; left: 5%; right: 5%; top: 0;
+            height: 3px; background: #34d399;
+            box-shadow: 0 0 10px #34d399, 0 0 20px #34d399;
+            animation: scanning 2.5s infinite ease-in-out;
+            border-radius: 5px; opacity: 0.8;
+        }
+        @keyframes scanning { 0% { top: 5%; } 50% { top: 95%; } 100% { top: 5%; } }
+        /* Thêm hiệu ứng cho thông báo */
+        .toast {
+            visibility: hidden; opacity: 0;
+            transition: opacity 0.3s, transform 0.3s;
+            transform: translateY(20px);
+        }
+        .toast.show {
+            visibility: visible; opacity: 1;
+            transform: translateY(0);
+        }
+    </style>
+</head>
+<body class="bg-gray-900 flex items-start justify-center min-h-screen font-sans text-white pt-4">
+    <div class="relative w-full max-w-lg mx-auto bg-gray-800 rounded-2xl shadow-2xl pt-2 px-6 pb-6 text-center">
+        
+        <div class="absolute top-4 right-4 flex flex-col items-end z-10">
+             <button id="syncButton" title="Đồng bộ thủ công" class="p-1">
+                <animated-icons
+                    src="https://animatedicons.co/get-icon?name=Sync&style=minimalistic&token=e9dea012-465e-4473-9939-5de89e4a2b52"
+                    trigger="click"
+                    attributes='{"variationThumbColour":"#536DFE","variationName":"Two Tone","variationNumber":2,"numberOfGroups":2,"backgroundIsGroup":false,"strokeWidth":2,"defaultColours":{"group-1":"#FFFFFF","group-2":"#34D399","background":"#FFFFFF"}}'
+                    height="32"
+                    width="32">
+                </animated-icons>
+            </button>
+            <div class="text-xs text-gray-500 mt-1 text-right">
+                <div id="syncStatus" class="whitespace-nowrap text-emerald-400 font-semibold"></div>
+                <div id="lastSyncTime" class="whitespace-nowrap"></div>
+            </div>
+        </div>
+        
+        <div class="mb-2">
+            <h1 class="text-3xl font-bold text-white">Quét Mã Đơn Hàng</h1>
+            <p id="statusText" class="text-gray-400 mt-1 h-5 font-semibold transition-colors duration-300">Đang khởi động...</p>
+        </div>
+
+        <div class="relative w-full aspect-square bg-black rounded-lg overflow-hidden mb-2 border-2 border-gray-600">
+            <div id="loadingMessage" class="h-full flex flex-col items-center justify-center text-gray-400">
+                 <svg class="animate-spin h-8 w-8 text-white mb-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+                <span id="loadingText">Đang tải dữ liệu...</span>
+            </div>
+            <div id="scannerContainer" class="relative w-full h-full hidden">
+                <video id="video" playsinline class="w-full h-full object-cover"></video>
+                <canvas id="canvas" class="hidden"></canvas>
+                <!-- THÊM MỚI: BỘ ĐẾM THỐNG KÊ -->
+                <div id="statsCounter" class="absolute top-2 left-2 bg-black bg-opacity-60 text-white text-lg font-bold p-2 rounded-md z-20">
+                    0 / 0
+                </div>
+                <div class="scan-line"></div>
+            </div>
+        </div>
+
+        <!-- THÊM MỚI: LỊCH SỬ QUÉT -->
+        <div class="w-full mt-4 text-left">
+            <div class="bg-gray-700 p-2 rounded-t-lg font-bold text-base sticky top-0 z-10">Lịch sử quét</div>
+            <div id="scanHistoryLog" class="bg-gray-900 rounded-b-lg max-h-40 overflow-y-auto">
+                <!-- Log entries will be added here by JS -->
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // DOM Elements
+        const video = document.getElementById('video');
+        const canvasElement = document.getElementById('canvas');
+        const canvas = canvasElement.getContext('2d', { willReadFrequently: true });
+        const loadingMessage = document.getElementById('loadingMessage');
+        const loadingText = document.getElementById('loadingText');
+        const scannerContainer = document.getElementById('scannerContainer');
+        const statusText = document.getElementById('statusText');
+        const syncButton = document.getElementById('syncButton');
+        const lastSyncTime = document.getElementById('lastSyncTime');
+        const syncStatus = document.getElementById('syncStatus');
+        const statsCounter = document.getElementById('statsCounter'); // THÊM MỚI
+        const scanHistoryLog = document.getElementById('scanHistoryLog'); // THÊM MỚI
+
+        let stream = null;
+        let animationFrameId = null;
+        let sheetData = {};
+        let isReadyToScan = false;
+        let lastScannedCode = null;
+        let scanTimeout = null;
+        let syncInterval = null;
+        let audioCtx;
+        
+        // THÊM MỚI: Biến cho thống kê và lịch sử
+        let scanHistory = [];
+        let daDongHangCount = 0;
+        let totalSoanHangCount = 0;
+        let isInitialLoad = true;
+
+
+        function initAudio() {
+            if (!audioCtx) {
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            }
+            if ('speechSynthesis' in window) {
+                window.speechSynthesis.getVoices();
+            }
+        }
+
+        function speak(text) {
+            if (!('speechSynthesis' in window)) {
+                console.warn("Trình duyệt không hỗ trợ Text-to-Speech.");
+                return;
+            }
+            window.speechSynthesis.cancel();
+            const utterance = new SpeechSynthesisUtterance(text);
+            utterance.lang = 'vi-VN';
+            utterance.rate = 1;
+            utterance.pitch = 1.2;
+            window.speechSynthesis.speak(utterance);
+        }
+
+        function playSound(type, message = '') {
+            initAudio();
+            if (!audioCtx) return;
+
+            if (audioCtx.state === 'suspended') {
+                audioCtx.resume();
+            }
+
+            if (type === 'error') {
+                speak(message || 'Lỗi');
+                return;
+            }
+
+            if (!audioCtx) return;
+            const now = audioCtx.currentTime;
+            
+            const gainNode = audioCtx.createGain();
+            gainNode.connect(audioCtx.destination);
+            gainNode.gain.setValueAtTime(0.5, now);
+
+            if (type === 'success') {
+                const oscillator = audioCtx.createOscillator();
+                oscillator.type = 'sine';
+                oscillator.frequency.setValueAtTime(1200, now);
+                oscillator.connect(gainNode);
+                gainNode.gain.setValueAtTime(0.8, now);
+                gainNode.gain.exponentialRampToValueAtTime(0.001, now + 0.2);
+                oscillator.start(now);
+                oscillator.stop(now + 0.2);
+            }
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            document.body.addEventListener('click', initAudio, { once: true });
+            syncDataWithSheet(false);
+            clearInterval(syncInterval);
+            syncInterval = setInterval(() => syncDataWithSheet(false), 60000); // Tăng thời gian đồng bộ
+            syncButton.addEventListener('click', () => syncDataWithSheet(true));
+        });
+
+        // THÊM MỚI: Hàm tính toán thống kê ban đầu
+        function calculateInitialStats() {
+            daDongHangCount = 0;
+            totalSoanHangCount = 0;
+            // Giả định trạng thái ban đầu là "Đã Soạn Hàng"
+            const relevantStatuses = ["Đã Đóng Hàng", "Đã Soạn Hàng"];
+            for (const code in sheetData) {
+                const status = sheetData[code].status;
+                if (relevantStatuses.includes(status)) {
+                    totalSoanHangCount++;
+                    if (status === "Đã Đóng Hàng") {
+                        daDongHangCount++;
+                    }
+                }
+            }
+        }
+        
+        // THÊM MỚI: Hàm cập nhật UI thống kê
+        function updateStatsUI() {
+            if (statsCounter) {
+                statsCounter.textContent = `${daDongHangCount} / ${totalSoanHangCount}`;
+            }
+        }
+
+        function syncDataWithSheet(isManual = false) {
+            syncStatus.textContent = "Syncing...";
+            lastSyncTime.classList.add('hidden');
+            syncButton.firstElementChild.classList.add('animate-spin');
+
+            google.script.run
+                .withSuccessHandler(response => {
+                    syncButton.firstElementChild.classList.remove('animate-spin');
+                    syncStatus.textContent = "";
+                    lastSyncTime.classList.remove('hidden');
+                    if (response.status === "success") {
+                        sheetData = response.data;
+                        const now = new Date();
+                        lastSyncTime.textContent = `Lúc: ${now.toLocaleTimeString('vi-VN')}`;
+                        
+                        // SỬA ĐỔI: Luôn tính toán lại thống kê sau mỗi lần đồng bộ
+                        calculateInitialStats();
+                        updateStatsUI();
+
+                        if (isInitialLoad) {
+                           isInitialLoad = false; // Đánh dấu đã tải lần đầu để không khởi động lại camera
+                           statusText.textContent = `Đã tải ${Object.keys(sheetData).length} mã. Sẵn sàng quét.`;
+                           startScanner();
+                        } else if (isManual) {
+                           syncStatus.textContent = "Sync complete!";
+                           setTimeout(() => { if(syncStatus.textContent === "Sync complete!") syncStatus.textContent = ""; }, 3000);
+                        }
+                    } else {
+                        showError("Lỗi tải dữ liệu: " + response.message);
+                    }
+                })
+                .withFailureHandler(error => {
+                    syncButton.firstElementChild.classList.remove('animate-spin');
+                    syncStatus.textContent = "";
+                    lastSyncTime.classList.remove('hidden');
+                    showError(`Không thể kết nối: ${error.message}`);
+                    if (isManual) {
+                       syncStatus.textContent = "Sync failed";
+                       setTimeout(() => { if(syncStatus.textContent === "Sync failed") syncStatus.textContent = ""; }, 3000);
+                    }
+                })
+                .getSheetData();
+        }
+
+        async function startScanner() {
+            if (isReadyToScan) return;
+            loadingText.textContent = "Đang mở camera...";
+            try {
+                stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+                video.srcObject = stream;
+                await video.play();
+                scannerContainer.classList.remove('hidden');
+                loadingMessage.classList.add('hidden');
+                isReadyToScan = true;
+                animationFrameId = requestAnimationFrame(tick);
+            } catch (err) {
+                showError("Lỗi camera: " + err.message);
+            }
+        }
+        
+        function tick() {
+            if (isReadyToScan && video.readyState === video.HAVE_ENOUGH_DATA) {
+                canvasElement.height = video.videoHeight;
+                canvasElement.width = video.videoWidth;
+                canvas.drawImage(video, 0, 0, canvasElement.width, canvasElement.height);
+                const imageData = canvas.getImageData(0, 0, canvasElement.width, canvasElement.height);
+                const code = jsQR(imageData.data, imageData.width, imageData.height, { inversionAttempts: "dontInvert" });
+
+                if (code && code.data !== lastScannedCode) {
+                    lastScannedCode = code.data;
+                    handleQRCode(code.data);
+                    clearTimeout(scanTimeout);
+                    scanTimeout = setTimeout(() => { lastScannedCode = null; }, 3000);
+                }
+            }
+            animationFrameId = requestAnimationFrame(tick);
+        }
+        
+        function handleQRCode(qrData) {
+            if ('vibrate' in navigator) navigator.vibrate(100);
+
+            if (qrData in sheetData) {
+                const itemData = sheetData[qrData];
+                const currentStatus = itemData.status;
+
+                if (currentStatus === "Đã Đóng Hàng" || currentStatus === "Đã Xuất Kho") {
+                    showToast(`Mã ${qrData} đã được xử lý!`, 'yellow');
+                    playSound('error', 'Đã quét');
+                    addLogEntry(qrData, 'warning', 'lỗi đã quét');
+                } else {
+                    const quantity = itemData.slsp;
+
+                    // SỬA ĐỔI: Thêm kiểm tra số lượng sản phẩm
+                    if (!quantity || parseInt(quantity) < 1) {
+                        showToast(`Mã ${qrData} không có sản phẩm!`, 'red');
+                        playSound('error', 'Không có sản phẩm');
+                        addLogEntry(qrData, 'error', 'lỗi không có sản phẩm');
+                        return; // Dừng xử lý tại đây
+                    }
+
+                    // Nếu số lượng hợp lệ, tiếp tục
+                    showToast(`Mã ${qrData} hợp lệ!`, 'green');
+                    playSound('success');
+
+                    daDongHangCount++;
+                    updateStatsUI();
+                    addLogEntry(qrData, 'success', 'cập nhật thành công');
+
+                    setTimeout(() => { speak(`${quantity} sản phẩm`); }, 300);
+                    
+                    sheetData[qrData].status = "Đã Đóng Hàng";
+                    syncUpdate(qrData);
+                }
+            } else {
+                showToast(`Mã ${qrData} không có trong danh sách!`, 'red');
+                playSound('error', 'Chưa soạn hàng');
+                addLogEntry(qrData, 'error', 'lỗi chưa soạn hàng');
+            }
+        }
+
+        function syncUpdate(qrData) {
+            google.script.run
+                .withSuccessHandler(response => console.log(`Sync update for ${qrData}: ${response.message}`))
+                .withFailureHandler(error => {
+                    console.error(`Sync failed for ${qrData}:`, error);
+                    if (sheetData[qrData]) sheetData[qrData].status = "Chưa đồng bộ";
+                    showToast(`Lỗi đồng bộ mã ${qrData}!`, 'red');
+                })
+                .updateSheetData(qrData);
+        }
+        
+        // --- CÁC HÀM MỚI: XỬ LÝ LỊCH SỬ ---
+        function addLogEntry(code, type, message) {
+            scanHistory.unshift({ code, type, message, time: new Date() });
+            if (scanHistory.length > 10) scanHistory.pop();
+            renderHistoryLog();
+        }
+
+        function renderHistoryLog() {
+            if (!scanHistoryLog) return;
+            scanHistoryLog.innerHTML = ''; 
+
+            scanHistory.forEach(entry => {
+                const logItem = document.createElement('div');
+                logItem.className = 'p-2 border-b border-gray-700 text-sm flex justify-between items-center';
+
+                let colorClass = '';
+                switch (entry.type) {
+                    case 'success': colorClass = 'text-green-400'; break;
+                    case 'warning': colorClass = 'text-yellow-400'; break;
+                    case 'error': colorClass = 'text-red-500'; break;
+                }
+                
+                logItem.innerHTML = `
+                    <span class="${colorClass}">
+                        <span class="font-bold">${entry.code}</span> - ${entry.message}
+                    </span>
+                    <span class="text-gray-500 text-xs">
+                        ${entry.time.toLocaleTimeString('vi-VN')}
+                    </span>
+                `;
+                scanHistoryLog.appendChild(logItem);
+            });
+        }
+        // --- KẾT THÚC HÀM MỚI ---
+
+        function showError(message) {
+            loadingText.textContent = message;
+            statusText.textContent = "Đã xảy ra lỗi.";
+            statusText.classList.remove('text-gray-400', 'text-green-500', 'text-yellow-500');
+            statusText.classList.add('text-red-500');
+        }
+
+        let toastTimeout;
+        function showToast(message, type = 'green') {
+             clearTimeout(toastTimeout);
+            statusText.classList.remove('text-gray-400', 'text-green-500', 'text-red-500', 'text-yellow-500');
+
+            if (type === 'green') statusText.classList.add('text-green-500');
+            else if (type === 'red') statusText.classList.add('text-red-500');
+            else if (type === 'yellow') statusText.classList.add('text-yellow-500');
+
+            statusText.textContent = message;
+
+            toastTimeout = setTimeout(() => {
+                statusText.textContent = `Sẵn sàng quét.`;
+                statusText.classList.remove('text-green-500', 'text-red-500', 'text-yellow-500');
+                statusText.classList.add('text-gray-400');
+            }, 2800);
+        }
+    </script>
+</body>
+</html>
+
+
