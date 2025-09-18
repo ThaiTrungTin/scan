@@ -205,7 +205,7 @@
             document.body.addEventListener('click', initAudio, { once: true });
             syncDataWithSheet(false);
             clearInterval(syncInterval);
-            syncInterval = setInterval(() => syncDataWithSheet(false), 60000); // Tăng thời gian đồng bộ
+            syncInterval = setInterval(() => syncDataWithSheet(false), 30000); // Tăng thời gian đồng bộ
             syncButton.addEventListener('click', () => syncDataWithSheet(true));
         });
 
