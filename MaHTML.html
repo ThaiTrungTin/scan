@@ -64,6 +64,7 @@
             <div id="scannerContainer" class="relative w-full h-full hidden">
                 <video id="video" playsinline class="w-full h-full object-cover"></video>
                 <canvas id="canvas" class="hidden"></canvas>
+                <!-- THÊM MỚI: BỘ ĐẾM THỐNG KÊ -->
                 <div id="statsCounter" class="absolute top-2 left-2 bg-black bg-opacity-60 text-white text-lg font-bold p-2 rounded-md z-20">
                     0 / 0
                 </div>
@@ -71,18 +72,24 @@
             </div>
         </div>
 
+        <!-- THÊM MỚI: LỊCH SỬ QUÉT -->
         <div class="w-full mt-4 text-left">
             <div class="bg-gray-700 p-2 rounded-t-lg font-bold text-base sticky top-0 z-10">Lịch sử quét</div>
             <div id="scanHistoryLog" class="bg-gray-900 rounded-b-lg max-h-40 overflow-y-auto">
+                <!-- Log entries will be added here by JS -->
             </div>
         </div>
     </div>
 
     <script>
-        // --- THAY ĐỔI QUAN TRỌNG ---
-        // Dán URL triển khai Web App của bạn vào đây
+        // ========================================================================
+        // !! QUAN TRỌNG: DÁN URL WEB APP CỦA BẠN VÀO ĐÂY !!
+        // URL này có được sau khi bạn triển khai lại mã Google Apps Script.
+        // Nó phải có đuôi là /exec.
         const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzfT4BV2PkG7HXSvG4GhgYcGk0CgusanFhNcd9kzl4ev-2tDjo304KroO2RqshJ7iz_/exec"; 
+        // ========================================================================
 
+        // DOM Elements
         const video = document.getElementById('video');
         const canvasElement = document.getElementById('canvas');
         const canvas = canvasElement.getContext('2d', { willReadFrequently: true });
@@ -93,8 +100,8 @@
         const syncButton = document.getElementById('syncButton');
         const lastSyncTime = document.getElementById('lastSyncTime');
         const syncStatus = document.getElementById('syncStatus');
-        const statsCounter = document.getElementById('statsCounter');
-        const scanHistoryLog = document.getElementById('scanHistoryLog');
+        const statsCounter = document.getElementById('statsCounter'); // THÊM MỚI
+        const scanHistoryLog = document.getElementById('scanHistoryLog'); // THÊM MỚI
 
         let stream = null;
         let animationFrameId = null;
@@ -105,33 +112,41 @@
         let syncInterval = null;
         let audioCtx;
         
+        // THÊM MỚI: Biến cho thống kê và lịch sử
         let scanHistory = [];
         let daDongHangCount = 0;
         let totalSoanHangCount = 0;
         let isInitialLoad = true;
 
-        // --- THÊM MỚI: HÀM GIAO TIẾP VỚI APPS SCRIPT ---
-        async function callAppsScript(functionName, parameters = {}) {
-            const response = await fetch(SCRIPT_URL, {
-                method: 'POST',
-                mode: 'cors',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({ functionName, parameters })
-            });
-            
-            // Chuyển hướng nếu cần
-            if (response.redirected) {
-                window.location.href = response.url;
-                return;
-            }
 
-            const result = await response.json();
-            return result;
+        // --- Hàm giao tiếp với Google Apps Script (SỬA LỖI) ---
+        async function callGoogleScript(functionName, parameters = {}) {
+            try {
+                const payload = { functionName, parameters };
+                const response = await fetch(SCRIPT_URL, {
+                    method: 'POST',
+                    redirect: "follow",
+                    body: JSON.stringify(payload),
+                });
+
+                if (!response.ok) {
+                    throw new Error(`Lỗi mạng: ${response.statusText}`);
+                }
+
+                const result = await response.json();
+
+                if (result.status === 'error') {
+                    throw new Error(result.message);
+                }
+                return result.data; // Trả về dữ liệu từ hàm Apps Script
+            } catch (error) {
+                console.error(`Lỗi khi gọi hàm '${functionName}':`, error);
+                showError(error.message); // Hiển thị lỗi ra UI
+                return null; // Trả về null khi có lỗi
+            }
         }
 
-        // --- Các hàm Audio và khởi động (không thay đổi nhiều) ---
+
         function initAudio() {
             if (!audioCtx) {
                 audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -142,7 +157,10 @@
         }
 
         function speak(text) {
-            if (!('speechSynthesis' in window)) return;
+            if (!('speechSynthesis' in window)) {
+                console.warn("Trình duyệt không hỗ trợ Text-to-Speech.");
+                return;
+            }
             window.speechSynthesis.cancel();
             const utterance = new SpeechSynthesisUtterance(text);
             utterance.lang = 'vi-VN';
@@ -154,15 +172,23 @@
         function playSound(type, message = '') {
             initAudio();
             if (!audioCtx) return;
-            if (audioCtx.state === 'suspended') audioCtx.resume();
+
+            if (audioCtx.state === 'suspended') {
+                audioCtx.resume();
+            }
+
             if (type === 'error') {
                 speak(message || 'Lỗi');
                 return;
             }
+
+            if (!audioCtx) return;
             const now = audioCtx.currentTime;
+            
             const gainNode = audioCtx.createGain();
             gainNode.connect(audioCtx.destination);
             gainNode.gain.setValueAtTime(0.5, now);
+
             if (type === 'success') {
                 const oscillator = audioCtx.createOscillator();
                 oscillator.type = 'sine';
@@ -179,71 +205,70 @@
             document.body.addEventListener('click', initAudio, { once: true });
             syncDataWithSheet(false);
             clearInterval(syncInterval);
-            syncInterval = setInterval(() => syncDataWithSheet(false), 60000);
+            syncInterval = setInterval(() => syncDataWithSheet(false), 60000); // Tăng thời gian đồng bộ
             syncButton.addEventListener('click', () => syncDataWithSheet(true));
         });
 
-        // --- Các hàm Thống kê (không đổi) ---
+        // THÊM MỚI: Hàm tính toán thống kê ban đầu
         function calculateInitialStats() {
             daDongHangCount = 0;
             totalSoanHangCount = 0;
+            // Giả định trạng thái ban đầu là "Đã Soạn Hàng"
             const relevantStatuses = ["Đã Đóng Hàng", "Đã Soạn Hàng"];
             for (const code in sheetData) {
                 const status = sheetData[code].status;
                 if (relevantStatuses.includes(status)) {
                     totalSoanHangCount++;
-                    if (status === "Đã Đóng Hàng") daDongHangCount++;
+                    if (status === "Đã Đóng Hàng") {
+                        daDongHangCount++;
+                    }
                 }
             }
         }
-        function updateStatsUI() {
-            if (statsCounter) statsCounter.textContent = `${daDongHangCount} / ${totalSoanHangCount}`;
-        }
         
-        // --- THAY ĐỔI LỚN: HÀM ĐỒNG BỘ DỮ LIỆU ---
-        async function syncDataWithSheet(isManual = false) {
+        // THÊM MỚI: Hàm cập nhật UI thống kê
+        function updateStatsUI() {
+            if (statsCounter) {
+                statsCounter.textContent = `${daDongHangCount} / ${totalSoanHangCount}`;
+            }
+        }
+
+        async function syncDataWithSheet(isManual = false) { // SỬA ĐỔI: Chuyển sang async
             syncStatus.textContent = "Syncing...";
             lastSyncTime.classList.add('hidden');
             syncButton.firstElementChild.classList.add('animate-spin');
 
-            try {
-                const response = await callAppsScript('getSheetData');
-                syncButton.firstElementChild.classList.remove('animate-spin');
-                syncStatus.textContent = "";
-                lastSyncTime.classList.remove('hidden');
+            const response = await callGoogleScript('getSheetData');
 
-                if (response.status === "success") {
-                    sheetData = response.data;
-                    const now = new Date();
-                    lastSyncTime.textContent = `Lúc: ${now.toLocaleTimeString('vi-VN')}`;
-                    
-                    calculateInitialStats();
-                    updateStatsUI();
+            syncButton.firstElementChild.classList.remove('animate-spin');
+            syncStatus.textContent = "";
+            lastSyncTime.classList.remove('hidden');
 
-                    if (isInitialLoad) {
-                       isInitialLoad = false;
-                       statusText.textContent = `Đã tải ${Object.keys(sheetData).length} mã. Sẵn sàng quét.`;
-                       startScanner();
-                    } else if (isManual) {
-                       syncStatus.textContent = "Sync complete!";
-                       setTimeout(() => { if(syncStatus.textContent === "Sync complete!") syncStatus.textContent = ""; }, 3000);
-                    }
-                } else {
-                    showError("Lỗi tải dữ liệu: " + response.message);
+            if (response) {
+                sheetData = response;
+                const now = new Date();
+                lastSyncTime.textContent = `Lúc: ${now.toLocaleTimeString('vi-VN')}`;
+                
+                calculateInitialStats();
+                updateStatsUI();
+
+                if (isInitialLoad) {
+                   isInitialLoad = false;
+                   statusText.textContent = `Đã tải ${Object.keys(sheetData).length} mã. Sẵn sàng quét.`;
+                   startScanner();
+                } else if (isManual) {
+                   syncStatus.textContent = "Sync complete!";
+                   setTimeout(() => { if(syncStatus.textContent === "Sync complete!") syncStatus.textContent = ""; }, 3000);
                 }
-            } catch (error) {
-                syncButton.firstElementChild.classList.remove('animate-spin');
-                syncStatus.textContent = "";
-                lastSyncTime.classList.remove('hidden');
-                showError(`Không thể kết nối: ${error.message}`);
+            } else {
+                showError("Lỗi tải dữ liệu. Vui lòng thử lại.");
                 if (isManual) {
                    syncStatus.textContent = "Sync failed";
                    setTimeout(() => { if(syncStatus.textContent === "Sync failed") syncStatus.textContent = ""; }, 3000);
                 }
             }
         }
-        
-        // --- Các hàm quét và xử lý QR (không đổi) ---
+
         async function startScanner() {
             if (isReadyToScan) return;
             loadingText.textContent = "Đang mở camera...";
@@ -267,6 +292,7 @@
                 canvas.drawImage(video, 0, 0, canvasElement.width, canvasElement.height);
                 const imageData = canvas.getImageData(0, 0, canvasElement.width, canvasElement.height);
                 const code = jsQR(imageData.data, imageData.width, imageData.height, { inversionAttempts: "dontInvert" });
+
                 if (code && code.data !== lastScannedCode) {
                     lastScannedCode = code.data;
                     handleQRCode(code.data);
@@ -279,27 +305,36 @@
         
         function handleQRCode(qrData) {
             if ('vibrate' in navigator) navigator.vibrate(100);
+
             if (qrData in sheetData) {
                 const itemData = sheetData[qrData];
                 const currentStatus = itemData.status;
+
                 if (currentStatus === "Đã Đóng Hàng" || currentStatus === "Đã Xuất Kho") {
                     showToast(`Mã ${qrData} đã được xử lý!`, 'yellow');
                     playSound('error', 'Đã quét');
                     addLogEntry(qrData, 'warning', 'lỗi đã quét');
                 } else {
                     const quantity = itemData.slsp;
+
+                    // SỬA ĐỔI: Thêm kiểm tra số lượng sản phẩm
                     if (!quantity || parseInt(quantity) < 1) {
                         showToast(`Mã ${qrData} không có sản phẩm!`, 'red');
                         playSound('error', 'Không có sản phẩm');
                         addLogEntry(qrData, 'error', 'lỗi không có sản phẩm');
-                        return;
+                        return; // Dừng xử lý tại đây
                     }
+
+                    // Nếu số lượng hợp lệ, tiếp tục
                     showToast(`Mã ${qrData} hợp lệ!`, 'green');
                     playSound('success');
+
                     daDongHangCount++;
                     updateStatsUI();
                     addLogEntry(qrData, 'success', 'cập nhật thành công');
+
                     setTimeout(() => { speak(`${quantity} sản phẩm`); }, 300);
+                    
                     sheetData[qrData].status = "Đã Đóng Hàng";
                     syncUpdate(qrData);
                 }
@@ -309,57 +344,71 @@
                 addLogEntry(qrData, 'error', 'lỗi chưa soạn hàng');
             }
         }
-        
-        // --- THAY ĐỔI LỚN: HÀM ĐỒNG BỘ NGẦM ---
-        function syncUpdate(qrData) {
-            // Gọi hàm cập nhật mà không cần chờ đợi, để UI không bị treo
-            callAppsScript('updateSheetData', { qrData: qrData })
-                .then(response => {
-                    console.log(`Sync update for ${qrData}: ${response.message}`);
-                })
-                .catch(error => {
-                    console.error(`Sync failed for ${qrData}:`, error);
-                    if (sheetData[qrData]) sheetData[qrData].status = "Chưa đồng bộ";
-                    showToast(`Lỗi đồng bộ mã ${qrData}!`, 'red');
-                });
+
+        async function syncUpdate(qrData) { // SỬA ĐỔI: Chuyển sang async
+            const response = await callGoogleScript('updateSheetData', { qrData: qrData });
+            if (response) {
+                 console.log(`Sync update for ${qrData}: ${response.message}`);
+            } else {
+                console.error(`Sync failed for ${qrData}:`, "Xem chi tiết lỗi trong hàm callGoogleScript");
+                if (sheetData[qrData]) sheetData[qrData].status = "Chưa đồng bộ"; // Có thể khôi phục trạng thái cũ
+                showToast(`Lỗi đồng bộ mã ${qrData}!`, 'red');
+            }
         }
         
-        // --- Các hàm hiển thị lịch sử và thông báo (không đổi) ---
+        // --- CÁC HÀM MỚI: XỬ LÝ LỊCH SỬ ---
         function addLogEntry(code, type, message) {
             scanHistory.unshift({ code, type, message, time: new Date() });
             if (scanHistory.length > 10) scanHistory.pop();
             renderHistoryLog();
         }
+
         function renderHistoryLog() {
             if (!scanHistoryLog) return;
             scanHistoryLog.innerHTML = ''; 
+
             scanHistory.forEach(entry => {
                 const logItem = document.createElement('div');
                 logItem.className = 'p-2 border-b border-gray-700 text-sm flex justify-between items-center';
+
                 let colorClass = '';
                 switch (entry.type) {
                     case 'success': colorClass = 'text-green-400'; break;
                     case 'warning': colorClass = 'text-yellow-400'; break;
                     case 'error': colorClass = 'text-red-500'; break;
                 }
-                logItem.innerHTML = `<span class="${colorClass}"><span class="font-bold">${entry.code}</span> - ${entry.message}</span><span class="text-gray-500 text-xs">${entry.time.toLocaleTimeString('vi-VN')}</span>`;
+                
+                logItem.innerHTML = `
+                    <span class="${colorClass}">
+                        <span class="font-bold">${entry.code}</span> - ${entry.message}
+                    </span>
+                    <span class="text-gray-500 text-xs">
+                        ${entry.time.toLocaleTimeString('vi-VN')}
+                    </span>
+                `;
                 scanHistoryLog.appendChild(logItem);
             });
         }
+        // --- KẾT THÚC HÀM MỚI ---
+
         function showError(message) {
             loadingText.textContent = message;
             statusText.textContent = "Đã xảy ra lỗi.";
             statusText.classList.remove('text-gray-400', 'text-green-500', 'text-yellow-500');
             statusText.classList.add('text-red-500');
         }
+
         let toastTimeout;
         function showToast(message, type = 'green') {
              clearTimeout(toastTimeout);
             statusText.classList.remove('text-gray-400', 'text-green-500', 'text-red-500', 'text-yellow-500');
+
             if (type === 'green') statusText.classList.add('text-green-500');
             else if (type === 'red') statusText.classList.add('text-red-500');
             else if (type === 'yellow') statusText.classList.add('text-yellow-500');
+
             statusText.textContent = message;
+
             toastTimeout = setTimeout(() => {
                 statusText.textContent = `Sẵn sàng quét.`;
                 statusText.classList.remove('text-green-500', 'text-red-500', 'text-yellow-500');
@@ -369,4 +418,6 @@
     </script>
 </body>
 </html>
+
+
 
